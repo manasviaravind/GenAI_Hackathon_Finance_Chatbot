@@ -1,0 +1,185 @@
+# ============================================================
+# PERSONAL FINANCE CHATBOT — SINGLE-CELL GOOGLE COLAB APP
+# IBM Granite 4.0 H 1B • Gradio UI • Purple→Blue Gradient
+# ============================================================
+
+import sys, platform, os, io, json, textwrap, requests
+
+# Warn on Python 3.12 (Colab issue)
+py_major, py_minor, _ = platform.python_version_tuple()
+if int(py_major) >= 3 and int(py_minor) >= 12:
+    print("If you get numpy errors, switch runtime to Python 3.10")
+
+# Install packages if missing
+def pip_install_if_missing(pkgs):
+    import importlib, subprocess
+    for p in pkgs:
+        name = p.split("==")[0]
+        try:
+            importlib.import_module(name)
+        except:
+            print("Installing", p)
+            subprocess.check_call([sys.executable, "-m", "pip", "install", p, "--quiet"])
+
+pip_install_if_missing(["gradio==4.19.2", "requests"])
+
+import gradio as gr
+
+# ------------------------------------------------------------
+# MODEL: IBM Granite 4.0 H 1B
+# ------------------------------------------------------------
+HF_MODEL = "ibm-granite/granite-4.0-h-1b"
+HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL}"
+
+# Replace with YOUR HF Token
+HF_TOKEN = "hf_XXXXXXXXXXXXXXXXXXXX"
+
+def call_hf(prompt, hf_token=None, max_tokens=350):
+    token = hf_token or os.environ.get("HF_TOKEN")
+    if not token:
+        return "[HF token missing — please paste your token to enable responses.]"
+
+    headers = {"Authorization": f"Bearer {token}"}
+    payload = {
+        "inputs": prompt,
+        "parameters": {"max_new_tokens": max_tokens, "temperature":0.4},
+        "options": {"wait_for_model": True}
+    }
+
+    try:
+        r = requests.post(HF_API_URL, headers=headers, json=payload, timeout=60)
+        r.raise_for_status()
+        data = r.json()
+
+        if isinstance(data, list) and "generated_text" in data[0]:
+            return data[0]["generated_text"]
+
+        return json.dumps(data)
+    except Exception as e:
+        return f"[Error contacting model] {e}"
+
+# ------------------------------------------------------------
+# FINANCE CHATBOT BRAIN
+# ------------------------------------------------------------
+def finance_chat(message, hf_token):
+    prompt = f"""
+You are a **professional personal finance assistant**.
+Be simple, actionable, friendly.
+Message: {message}
+
+Your tasks:
+- Give clear financial advice.
+- Include examples and numbers.
+- NEVER give legal or tax guarantees.
+- Keep answers short (6–10 lines).
+"""
+    return call_hf(prompt, hf_token, max_tokens=350)
+
+
+def monthly_budget(income, expenses_text):
+    try:
+        income = float(income)
+    except:
+        return "Invalid income."
+
+    expenses = []
+    total_exp = 0
+    for line in expenses_text.split("\n"):
+        parts = line.split(":")
+        if len(parts)==2:
+            name = parts[0].strip()
+            try:
+                amount = float(parts[1].strip())
+                expenses.append((name, amount))
+                total_exp += amount
+            except:
+                pass
+
+    savings = income - total_exp
+    status = "GOOD ✔" if savings >= income*0.20 else "NEEDS IMPROVEMENT ⚠"
+
+    text = f"### Monthly Budget Report\nIncome: ₹{income}\nExpenses: ₹{total_exp}\nSavings: ₹{savings}\nStatus: {status}\n\nBreakdown:\n"
+    for n,a in expenses:
+        text += f"- {n}: ₹{a}\n"
+
+    return text
+
+
+def goal_planner(goal_amount, months):
+    try:
+        goal_amount = float(goal_amount)
+        months = int(months)
+    except:
+        return "Invalid numbers."
+
+    per_month = goal_amount / months
+    return f"To reach ₹{goal_amount} in {months} months, save **₹{per_month:.2f} per month**."
+
+
+def investment_advice(profile, hf_token):
+    prompt = f"""
+You are a financial investment advisor.
+User risk profile: {profile}
+
+Give:
+- Best investment types (FD, SIP, Index Funds, Gold, etc.)
+- Expected returns (approximate)
+- Allocation suggestions
+Keep answer short.
+"""
+    return call_hf(prompt, hf_token)
+
+
+# ------------------------------------------------------------
+# CUSTOM PURPLE→BLUE GRADIENT CSS
+# ------------------------------------------------------------
+CUSTOM_CSS = """
+.gradio-container { background: linear-gradient(135deg, #5b2cff 0%, #00b0ff 100%); color: #0b1226; }
+.gradio-container .gradio-row { background: rgba(255,255,255,0.85); border-radius: 12px; padding: 12px; }
+h1 { color: white; }
+.card { background: rgba(255,255,255,0.95); padding:10px; border-radius:10px;
+       box-shadow:0 6px 18px rgba(4,8,20,0.22); }
+"""
+
+# ------------------------------------------------------------
+# GRADIO UI
+# ------------------------------------------------------------
+with gr.Blocks(title="AI Personal Finance Chatbot", css=CUSTOM_CSS) as demo:
+
+    gr.Markdown("<h1>💰 AI Personal Finance Chatbot</h1>")
+    gr.Markdown(f"<div class='card'>Powered by IBM Granite 4.0 H 1B — Model: <code>{HF_MODEL}</code></div>")
+
+    hf_token = gr.Textbox(label="Hugging Face Token", value=HF_TOKEN, placeholder="hf_xxx...")
+
+    with gr.Tab("💬 Finance Chatbot"):
+        msg = gr.Textbox(label="Ask anything about money, savings, investing, debt, taxes.", lines=3)
+        chat_btn = gr.Button("Chat")
+        chat_out = gr.Markdown()
+        chat_btn.click(finance_chat, inputs=[msg, hf_token], outputs=chat_out)
+
+    with gr.Tab("📊 Monthly Budget Planner"):
+        income = gr.Number(label="Monthly Income (₹)", value=50000)
+        expenses = gr.Textbox(label="Expenses (one per line — name: amount)", 
+                              value="Rent: 15000\nFood: 6000\nTransport: 2000\nOthers: 3000")
+        bud_btn = gr.Button("Calculate Budget")
+        bud_out = gr.Markdown()
+        bud_btn.click(monthly_budget, inputs=[income, expenses], outputs=bud_out)
+
+    with gr.Tab("🎯 Goal Planning"):
+        goal_amt = gr.Number(label="Goal Amount (₹)", value=100000)
+        goal_months = gr.Number(label="Months", value=12)
+        goal_btn = gr.Button("Plan Goal")
+        goal_out = gr.Markdown()
+        goal_btn.click(goal_planner, inputs=[goal_amt, goal_months], outputs=goal_out)
+
+    with gr.Tab("📈 Investment Advice (AI)"):
+        profile = gr.Radio(
+            ["Low Risk", "Moderate Risk", "High Risk"],
+            label="Risk Profile",
+            value="Moderate Risk"
+        )
+        inv_btn = gr.Button("Get Investment Advice")
+        inv_out = gr.Markdown()
+        inv_btn.click(investment_advice, inputs=[profile, hf_token], outputs=inv_out)
+
+demo.launch(share=False)
